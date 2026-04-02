@@ -1,0 +1,211 @@
+{% extends 'base.html' %}
+
+{% block title %}Admin | TVU Attendance{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+    <div>
+        <h1 class="h4 mb-1">Admin Dashboard</h1>
+        <p class="text-secondary mb-0">Total students: <strong id="studentCount">{{ student_count or 0 }}</strong></p>
+    </div>
+</div>
+
+{% if db_error %}
+<div class="alert alert-warning" role="alert">
+    Database is not configured yet. {{ db_error }}
+</div>
+{% endif %}
+
+<div class="card shadow-sm border-0 mb-3">
+    <div class="card-body border-bottom">
+        <h2 class="h5 mb-0">Danh sách sinh viên đã xác thực</h2>
+        <p class="text-secondary mb-0 small">Tong ban ghi: {{ log_count or 0 }}</p>
+    </div>
+    <div class="table-responsive">
+        <table class="table align-middle mb-0" id="logTable">
+            <thead class="table-light">
+                <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">MSSV</th>
+                    <th scope="col">Name</th>
+                    <th scope="col">Time</th>
+                    <th scope="col">Date</th>
+                    <th scope="col" class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in attendance_logs %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ log.mssv }}</td>
+                    <td>{{ log.name }}</td>
+                    <td>{{ log.time_text }}</td>
+                    <td>{{ log.date_text }}</td>
+                    <td class="text-end">
+                        <button
+                            type="button"
+                            class="btn btn-sm btn-outline-danger js-delete-log"
+                            data-log-id="{{ log.id }}"
+                        >
+                            Delete
+                        </button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="text-center text-secondary py-4">No scan logs yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card shadow-sm border-0">
+    <div id="adminStatus" class="px-3 pt-3"></div>
+    <div class="table-responsive">
+        <table class="table align-middle mb-0" id="studentTable">
+            <thead class="table-light">
+                <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">MSSV</th>
+                    <th scope="col">Name</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last Attended</th>
+                    <th scope="col" class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for student in students %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ student.mssv }}</td>
+                    <td>{{ student.name }}</td>
+                    <td>
+                        {% if student.is_present %}
+                        <span class="badge text-bg-success">Present</span>
+                        {% else %}
+                        <span class="badge text-bg-secondary">Absent</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ student.last_attended_text or '-' }}</td>
+                    <td class="text-end">
+                        <button
+                            type="button"
+                            class="btn btn-sm btn-outline-danger js-delete-student"
+                            data-mssv="{{ student.mssv }}"
+                            data-name="{{ student.name }}"
+                        >
+                            Delete
+                        </button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="text-center text-secondary py-4">No students found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+const adminStatus = document.getElementById("adminStatus");
+const studentTable = document.getElementById("studentTable");
+const studentCountEl = document.getElementById("studentCount");
+const logTable = document.getElementById("logTable");
+
+function showAdminStatus(message, type) {
+    adminStatus.innerHTML = `<div class="alert alert-${type} mb-0" role="alert">${message}</div>`;
+}
+
+studentTable.addEventListener("click", async (event) => {
+    const button = event.target.closest(".js-delete-student");
+    if (!button) {
+        return;
+    }
+
+    const mssv = (button.dataset.mssv || "").trim();
+    const name = (button.dataset.name || "").trim();
+    if (!mssv) {
+        showAdminStatus("Missing MSSV for delete action.", "danger");
+        return;
+    }
+
+    const confirmed = window.confirm(`Delete student ${name || mssv} (${mssv})? This cannot be undone.`);
+    if (!confirmed) {
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const response = await fetch(`/api/admin/students/${encodeURIComponent(mssv)}`, {
+            method: "DELETE",
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || "Delete failed.");
+        }
+
+        showAdminStatus(`Deleted student ${mssv}.`, "success");
+        const row = button.closest("tr");
+        if (row) {
+            row.remove();
+        }
+
+        const currentCount = Number(studentCountEl.textContent || "0");
+        const nextCount = Math.max(0, currentCount - 1);
+        studentCountEl.textContent = String(nextCount);
+
+        if (nextCount === 0) {
+            const tbody = studentTable.querySelector("tbody");
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-4">No students found.</td></tr>';
+            }
+        }
+    } catch (error) {
+        showAdminStatus(error.message || "Delete failed.", "danger");
+        button.disabled = false;
+    }
+});
+
+logTable.addEventListener("click", async (event) => {
+    const button = event.target.closest(".js-delete-log");
+    if (!button) {
+        return;
+    }
+
+    const logId = (button.dataset.logId || "").trim();
+    if (!logId) {
+        showAdminStatus("Missing log id.", "danger");
+        return;
+    }
+
+    const confirmed = window.confirm("Delete this attendance log?");
+    if (!confirmed) {
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const response = await fetch(`/api/admin/attendance-logs/${encodeURIComponent(logId)}`, {
+            method: "DELETE",
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || "Delete log failed.");
+        }
+
+        const row = button.closest("tr");
+        if (row) {
+            row.remove();
+        }
+        showAdminStatus("Deleted attendance log.", "success");
+    } catch (error) {
+        showAdminStatus(error.message || "Delete log failed.", "danger");
+        button.disabled = false;
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,150 @@
+{% extends 'base.html' %}
+
+{% block title %}Register | TVU Attendance{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+    <div class="col-lg-6">
+        <div class="card shadow-sm border-0 h-100">
+            <div class="card-body">
+                <h1 class="h4 mb-3">Register Student</h1>
+                <form id="registerForm" class="vstack gap-3">
+                    <div>
+                        <label for="mssv" class="form-label">MSSV</label>
+                        <input id="mssv" name="mssv" class="form-control" required />
+                    </div>
+                    <div>
+                        <label for="name" class="form-label">Full Name</label>
+                        <input id="name" name="name" class="form-control" required />
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button id="captureBtn" type="button" class="btn btn-outline-primary">Capture</button>
+                        <button id="submitBtn" type="submit" class="btn btn-primary">Register</button>
+                    </div>
+                </form>
+                <div id="statusBox" class="alert mt-3 d-none" role="alert"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card shadow-sm border-0 h-100">
+            <div class="card-body">
+                <h2 class="h5 mb-3">Camera</h2>
+                <video
+                    id="camera"
+                    class="w-100 rounded border"
+                    autoplay
+                    playsinline
+                    muted
+                    style="background:#111;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);"
+                ></video>
+                <canvas id="snapshot" class="d-none"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const video = document.getElementById("camera");
+const canvas = document.getElementById("snapshot");
+const form = document.getElementById("registerForm");
+const captureBtn = document.getElementById("captureBtn");
+const submitBtn = document.getElementById("submitBtn");
+const statusBox = document.getElementById("statusBox");
+const FLIP_CAMERA = true;
+
+let capturedImage = "";
+
+function showStatus(message, type) {
+    statusBox.className = `alert mt-3 alert-${type}`;
+    statusBox.textContent = message;
+}
+
+async function startCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user" },
+            audio: false,
+        });
+        video.srcObject = stream;
+    } catch (error) {
+        showStatus("Cannot access camera. Please allow permission.", "danger");
+    }
+}
+
+function captureFrame() {
+    if (!video.videoWidth || !video.videoHeight) {
+        showStatus("Camera is not ready yet.", "warning");
+        return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (FLIP_CAMERA) {
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+    } else {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+
+    capturedImage = canvas.toDataURL("image/jpeg", 0.92);
+    showStatus("Captured image successfully.", "info");
+}
+
+captureBtn.addEventListener("click", captureFrame);
+
+form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const mssv = document.getElementById("mssv").value.trim();
+    const name = document.getElementById("name").value.trim();
+
+    if (!mssv || !name) {
+        showStatus("Please fill MSSV and Full Name.", "warning");
+        return;
+    }
+
+    if (!capturedImage) {
+        showStatus("Please capture an image before register.", "warning");
+        return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Registering...";
+
+    try {
+        const response = await fetch("/api/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                mssv,
+                name,
+                image_base64: capturedImage,
+            }),
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.detail || "Register failed.");
+        }
+
+        showStatus(`Registered: ${result.student.name} (${result.student.mssv})`, "success");
+        form.reset();
+        capturedImage = "";
+    } catch (error) {
+        showStatus(error.message || "Register failed.", "danger");
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Register";
+    }
+});
+
+startCamera();
+</script>
+{% endblock %}

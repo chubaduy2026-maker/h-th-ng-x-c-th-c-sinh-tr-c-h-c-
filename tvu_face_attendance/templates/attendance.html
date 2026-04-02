@@ -1,0 +1,296 @@
+{% extends 'base.html' %}
+
+{% block title %}Attendance | TVU Attendance{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+    <div class="col-lg-7">
+        <div class="card shadow-sm border-0">
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <h1 class="h4 mb-0">Attendance Session</h1>
+                    <div class="d-flex gap-2">
+                        <button id="scanBtn" class="btn btn-primary btn-sm" type="button">Scan 6s</button>
+                        <button id="stopBtn" class="btn btn-outline-secondary btn-sm" type="button">Stop & Finalize</button>
+                        <button id="reloadBtn" class="btn btn-outline-dark btn-sm" type="button">Reload Data</button>
+                    </div>
+                </div>
+
+                <video
+                    id="camera"
+                    class="w-100 rounded border"
+                    autoplay
+                    playsinline
+                    muted
+                    style="background:#111;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);"
+                ></video>
+                <canvas id="snapshot" class="d-none"></canvas>
+
+                <div id="statusBox" class="alert alert-info mt-3 mb-0" role="alert">
+                    Ready. Click Scan 6s to start one attendance scan window.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card shadow-sm border-0 h-100">
+            <div class="card-body">
+                <h2 class="h5 mb-2">Current Candidate</h2>
+                <div id="currentCandidate" class="border rounded p-2 mb-3 text-secondary">No candidate.</div>
+                <h2 class="h5 mb-3">Recent Attendance</h2>
+                <div id="recentList" class="vstack gap-2">
+                    <div class="text-secondary">No attendance yet.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const video = document.getElementById("camera");
+const canvas = document.getElementById("snapshot");
+const scanBtn = document.getElementById("scanBtn");
+const stopBtn = document.getElementById("stopBtn");
+const reloadBtn = document.getElementById("reloadBtn");
+const statusBox = document.getElementById("statusBox");
+const recentList = document.getElementById("recentList");
+const currentCandidate = document.getElementById("currentCandidate");
+const FLIP_CAMERA = true;
+
+let stream = null;
+let scanTimer = null;
+let scanBusy = false;
+let activeSessionId = "";
+let stopRequested = false;
+
+function showStatus(message, type = "info") {
+    statusBox.className = `alert mt-3 mb-0 alert-${type}`;
+    statusBox.textContent = message;
+}
+
+function renderRecent(items) {
+    if (!items || items.length === 0) {
+        recentList.innerHTML = '<div class="text-secondary">No attendance yet.</div>';
+        return;
+    }
+
+    recentList.innerHTML = items
+        .map((item) => (
+            `<div class="border rounded p-2">`
+            + `<div class="fw-semibold">${item.name || item.mssv}</div>`
+            + `<div class="small text-secondary">${item.mssv} • ${item.marked_at || '-'}</div>`
+            + `</div>`
+        ))
+        .join("");
+}
+
+function renderCandidate(preview) {
+    if (!preview) {
+        currentCandidate.className = "border rounded p-2 mb-3 text-secondary";
+        currentCandidate.textContent = "No candidate.";
+        return;
+    }
+
+    currentCandidate.className = "border rounded p-2 mb-3";
+    currentCandidate.innerHTML = `<div class="fw-semibold">${preview.name || preview.mssv}</div><div class="small text-secondary">${preview.mssv || '-'}</div>`;
+}
+
+async function startCamera() {
+    if (stream) {
+        return;
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+    });
+    video.srcObject = stream;
+}
+
+function stopCamera() {
+    if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+    }
+    stream = null;
+    video.srcObject = null;
+}
+
+async function reloadMatcher() {
+    const response = await fetch("/api/attendance/reload", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(result.detail || "Cannot reload student data.");
+    }
+    return result.loaded;
+}
+
+async function pullRecent() {
+    const response = await fetch("/api/attendance/recent");
+    const result = await response.json();
+    if (response.ok) {
+        renderRecent(result.recent || []);
+    }
+}
+
+function stopLocalScanLoop() {
+    if (scanTimer) {
+        clearInterval(scanTimer);
+    }
+    scanTimer = null;
+}
+
+async function startScanSession() {
+    await startCamera();
+    const response = await fetch("/api/attendance/session/start", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(result.detail || "Cannot start scan session.");
+    }
+
+    activeSessionId = result.session_id;
+    return result;
+}
+
+async function sendFrameToSession() {
+    if (scanBusy || !activeSessionId || !video.videoWidth || !video.videoHeight) {
+        return;
+    }
+
+    const sendingSessionId = activeSessionId;
+    scanBusy = true;
+    try {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+
+        if (FLIP_CAMERA) {
+            ctx.save();
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+        } else {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        }
+
+        const imageBase64 = canvas.toDataURL("image/jpeg", 0.78);
+        const response = await fetch("/api/attendance/session/frame", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: sendingSessionId,
+                image_base64: imageBase64,
+            }),
+        });
+        const result = await response.json();
+
+        if (stopRequested || sendingSessionId !== activeSessionId) {
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(result.detail || "Scan failed.");
+        }
+
+        if (result.status === "running") {
+            renderCandidate(result.preview || null);
+            const preview = result.preview ? ` | Candidate: ${result.preview.name}` : "";
+            showStatus(`Scanning... ${result.remaining_seconds}s${preview}`, "warning");
+            return;
+        }
+
+        if (result.status === "completed") {
+            stopLocalScanLoop();
+            scanBtn.disabled = false;
+
+            if (result.matched) {
+                showStatus(result.message || "Attendance saved.", "success");
+            } else {
+                showStatus(result.message || "No student matched.", "secondary");
+            }
+
+            activeSessionId = "";
+            renderCandidate(null);
+            await pullRecent();
+        }
+    } catch (error) {
+        stopLocalScanLoop();
+        scanBtn.disabled = false;
+        showStatus(error.message || "Scan failed.", "danger");
+        activeSessionId = "";
+    } finally {
+        scanBusy = false;
+    }
+}
+
+scanBtn.addEventListener("click", async () => {
+    if (activeSessionId) {
+        showStatus("A scan session is already running.", "warning");
+        return;
+    }
+
+    scanBtn.disabled = true;
+    stopRequested = false;
+    renderCandidate(null);
+    try {
+        const started = await startScanSession();
+        showStatus(`Scan started for ${started.duration_seconds}s...`, "info");
+        stopLocalScanLoop();
+        scanTimer = setInterval(sendFrameToSession, 300);
+    } catch (error) {
+        scanBtn.disabled = false;
+        showStatus(error.message || "Cannot start scan.", "danger");
+    }
+});
+
+stopBtn.addEventListener("click", async () => {
+    stopLocalScanLoop();
+
+    const sessionToFinish = activeSessionId;
+    stopRequested = true;
+    activeSessionId = "";
+    scanBtn.disabled = false;
+
+    if (sessionToFinish) {
+        try {
+            const response = await fetch("/api/attendance/session/finish", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session_id: sessionToFinish }),
+            });
+            const result = await response.json();
+            if (response.ok && result.matched) {
+                showStatus(result.message || "Attendance saved.", "success");
+                await pullRecent();
+            } else if (response.ok) {
+                showStatus(result.message || "Scan stopped.", "secondary");
+            }
+        } catch (error) {
+            showStatus("Scan stopped.", "secondary");
+        }
+    } else {
+        showStatus("Camera stopped.", "secondary");
+    }
+
+    renderCandidate(null);
+    stopCamera();
+});
+
+reloadBtn.addEventListener("click", async () => {
+    try {
+        const loaded = await reloadMatcher();
+        showStatus(`Reloaded ${loaded} student(s).`, "info");
+    } catch (error) {
+        showStatus(error.message || "Reload failed.", "danger");
+    }
+});
+
+window.addEventListener("beforeunload", () => {
+    stopLocalScanLoop();
+    stopCamera();
+});
+
+pullRecent();
+</script>
+{% endblock %}

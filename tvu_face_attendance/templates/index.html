@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+
+{% block title %}TVU Face Attendance{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h1 class="h4 mb-0">TVU Face Attendance</h1>
+          <button id="startScanBtn" type="button" class="btn btn-primary">Bat dau diem danh</button>
+        </div>
+
+        <img
+          id="videoStream"
+          src="/video_feed"
+          alt="Camera stream"
+          class="w-100 rounded border"
+          style="background:#101010;aspect-ratio:4/3;object-fit:cover;"
+        />
+
+        <div id="scanStatus" class="alert alert-info mt-3 mb-0" role="alert">
+          San sang. Bam "Bat dau diem danh" de bat dau phien quet 6 giay.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card shadow-sm border-0 h-100">
+      <div class="card-body">
+        <h2 class="h5">Huong dan nhanh</h2>
+        <ol class="mb-0">
+          <li>Bam "Bat dau diem danh".</li>
+          <li>Giup khuon mat nam ro trong khung hinh trong 6 giay.</li>
+          <li>He thong se chot 1 ket qua va tu dong luu vao attendance_logs.</li>
+          <li>Mo trang Admin de xem lich su.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const startBtn = document.getElementById("startScanBtn");
+const statusBox = document.getElementById("scanStatus");
+
+function showStatus(message, type = "info") {
+  statusBox.className = `alert mt-3 mb-0 alert-${type}`;
+  statusBox.textContent = message;
+}
+
+async function refreshScanStatus() {
+  try {
+    const response = await fetch("/scan_status");
+    const data = await response.json();
+
+    if (data.is_scanning) {
+      startBtn.disabled = true;
+      showStatus(`Dang quet... con ${data.remaining_seconds}s`, "warning");
+    } else {
+      startBtn.disabled = false;
+      showStatus(data.last_result || "San sang.", "info");
+    }
+  } catch (error) {
+    showStatus("Khong lay duoc trang thai quet.", "danger");
+  }
+}
+
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true;
+  try {
+    const response = await fetch("/start_scan", { method: "POST" });
+    const data = await response.json();
+
+    if (data.status === "busy") {
+      showStatus("Dang co phien quet khac. Vui long cho hoan tat.", "warning");
+    } else {
+      showStatus("Da bat dau quet 6 giay.", "success");
+    }
+  } catch (error) {
+    showStatus("Khong the bat dau phien quet.", "danger");
+  } finally {
+    refreshScanStatus();
+  }
+});
+
+setInterval(refreshScanStatus, 800);
+refreshScanStatus();
+</script>
+{% endblock %}
