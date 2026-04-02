@@ -1,1 +1,9 @@
--r tvu_face_attendance/requirements.txt
+insightface
+onnxruntime
+opencv-python
+pymongo
+python-dotenv
+fastapi
+uvicorn
+jinja2
+numpy
