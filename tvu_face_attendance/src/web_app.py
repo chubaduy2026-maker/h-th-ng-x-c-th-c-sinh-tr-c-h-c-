@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import cv2
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -34,8 +38,6 @@ try:
         pull_data,
         update_attendance,
     )
-    from src.face_engine import get_embedding_from_face, get_faces
-    from src.matcher import FaceMatcher
 except ImportError:
     from config import (
         BASE_DIR,
@@ -55,15 +57,64 @@ except ImportError:
         pull_data,
         update_attendance,
     )
-    from face_engine import get_embedding_from_face, get_faces
-    from matcher import FaceMatcher
+FACE_RUNTIME_AVAILABLE = True
+FACE_RUNTIME_REASON = ""
+
+try:
+    try:
+        from src.face_engine import get_embedding_from_face, get_faces
+        from src.matcher import FaceMatcher
+    except ImportError:
+        from face_engine import get_embedding_from_face, get_faces
+        from matcher import FaceMatcher
+except Exception as exc:
+    FACE_RUNTIME_AVAILABLE = False
+    FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
+    get_embedding_from_face = None
+    get_faces = None
+    FaceMatcher = None
+
+
+class _IndexStub:
+    def __init__(self) -> None:
+        self.ntotal = 0
+
+
+class _DisabledFaceMatcher:
+    def __init__(self) -> None:
+        self.index = _IndexStub()
+
+    def load_vectors(self, _students: list[dict[str, Any]]) -> None:
+        return None
+
+    def search(self, _vector: np.ndarray, threshold: float = 0.0) -> str:
+        return ""
+
+    def get_name(self, _mssv: str) -> str:
+        return ""
+
+
+def _face_runtime_message() -> str:
+    base = "Face recognition is unavailable on this deployment."
+    if FACE_RUNTIME_REASON:
+        return f"{base} {FACE_RUNTIME_REASON}"
+    return base
+
+
+def _ensure_face_runtime() -> None:
+    if not FACE_RUNTIME_AVAILABLE or cv2 is None:
+        raise HTTPException(status_code=503, detail=_face_runtime_message())
 
 
 app = FastAPI(title="TVU Face Attendance Web")
 templates = Jinja2Templates(directory=str(Path(BASE_DIR) / "templates"))
 
 _attendance_lock = threading.Lock()
-_attendance_matcher = FaceMatcher(dimension=512)
+_attendance_matcher = (
+    FaceMatcher(dimension=512)
+    if FACE_RUNTIME_AVAILABLE and FaceMatcher is not None
+    else _DisabledFaceMatcher()
+)
 _attendance_last_reload_ts = 0.0
 _recent_attendance: list[dict[str, Any]] = []
 
@@ -72,6 +123,9 @@ _SCAN_DURATION_SECONDS = max(5, min(6, int(SCAN_DURATION_SECONDS)))
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
+    if cv2 is None:
+        raise HTTPException(status_code=503, detail=_face_runtime_message())
+
     payload = image_base64.strip()
     if payload.startswith("data:image") and "," in payload:
         payload = payload.split(",", 1)[1]
@@ -89,6 +143,9 @@ def _decode_base64_image(image_base64: str) -> np.ndarray:
 
 
 def _reload_attendance_matcher(force: bool = False) -> int:
+    if not FACE_RUNTIME_AVAILABLE:
+        return 0
+
     global _attendance_last_reload_ts
 
     now = time.time()
@@ -115,6 +172,9 @@ def _session_remaining_seconds(session: dict[str, Any]) -> int:
 
 
 def _pick_best_candidate(frame: np.ndarray) -> dict[str, Any] | None:
+    if not FACE_RUNTIME_AVAILABLE:
+        return None
+
     faces = get_faces(frame)
     best: dict[str, Any] | None = None
 
@@ -220,7 +280,11 @@ async def register_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="register.html",
-        context={"page_title": "Register"},
+        context={
+            "page_title": "Register",
+            "face_runtime_available": FACE_RUNTIME_AVAILABLE and cv2 is not None,
+            "face_runtime_reason": _face_runtime_message(),
+        },
     )
 
 
@@ -229,7 +293,11 @@ async def attendance_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="attendance.html",
-        context={"page_title": "Attendance"},
+        context={
+            "page_title": "Attendance",
+            "face_runtime_available": FACE_RUNTIME_AVAILABLE and cv2 is not None,
+            "face_runtime_reason": _face_runtime_message(),
+        },
     )
 
 
@@ -275,6 +343,8 @@ async def admin_page(request: Request) -> HTMLResponse:
 
 @app.post("/api/register")
 async def api_register(request: Request) -> dict[str, Any]:
+    _ensure_face_runtime()
+
     payload = await request.json()
 
     mssv = str(payload.get("mssv", "")).strip()
@@ -355,6 +425,8 @@ async def api_delete_attendance_log(log_id: str) -> dict[str, Any]:
 
 @app.post("/api/attendance/reload")
 async def api_attendance_reload() -> dict[str, Any]:
+    _ensure_face_runtime()
+
     try:
         loaded = _reload_attendance_matcher(force=True)
     except Exception as exc:
@@ -371,6 +443,8 @@ async def api_recent_attendance() -> dict[str, Any]:
 
 @app.post("/api/attendance/session/start")
 async def api_start_scan_session() -> dict[str, Any]:
+    _ensure_face_runtime()
+
     global _active_scan_session
 
     loaded = _reload_attendance_matcher(force=False)
@@ -397,6 +471,8 @@ async def api_start_scan_session() -> dict[str, Any]:
 
 @app.post("/api/attendance/session/frame")
 async def api_scan_session_frame(request: Request) -> dict[str, Any]:
+    _ensure_face_runtime()
+
     global _active_scan_session
 
     payload = await request.json()

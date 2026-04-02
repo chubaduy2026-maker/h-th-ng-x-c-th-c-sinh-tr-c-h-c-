@@ -3,6 +3,12 @@
 {% block title %}Attendance | TVU Attendance{% endblock %}
 
 {% block content %}
+{% if not face_runtime_available %}
+<div class="alert alert-warning" role="alert">
+    Face recognition is unavailable on this deployment. {{ face_runtime_reason }}
+</div>
+{% endif %}
+
 <div class="row g-3">
     <div class="col-lg-7">
         <div class="card shadow-sm border-0">
@@ -57,6 +63,8 @@ const statusBox = document.getElementById("statusBox");
 const recentList = document.getElementById("recentList");
 const currentCandidate = document.getElementById("currentCandidate");
 const FLIP_CAMERA = true;
+const FACE_RUNTIME_AVAILABLE = {{ face_runtime_available | tojson }};
+const FACE_RUNTIME_REASON = {{ face_runtime_reason | tojson }};
 
 let stream = null;
 let scanTimer = null;
@@ -225,6 +233,11 @@ async function sendFrameToSession() {
 }
 
 scanBtn.addEventListener("click", async () => {
+    if (!FACE_RUNTIME_AVAILABLE) {
+        showStatus(FACE_RUNTIME_REASON || "Face recognition is unavailable on this deployment.", "warning");
+        return;
+    }
+
     if (activeSessionId) {
         showStatus("A scan session is already running.", "warning");
         return;
@@ -278,6 +291,11 @@ stopBtn.addEventListener("click", async () => {
 });
 
 reloadBtn.addEventListener("click", async () => {
+    if (!FACE_RUNTIME_AVAILABLE) {
+        showStatus(FACE_RUNTIME_REASON || "Face recognition is unavailable on this deployment.", "warning");
+        return;
+    }
+
     try {
         const loaded = await reloadMatcher();
         showStatus(`Reloaded ${loaded} student(s).`, "info");
@@ -292,5 +310,12 @@ window.addEventListener("beforeunload", () => {
 });
 
 pullRecent();
+
+if (!FACE_RUNTIME_AVAILABLE) {
+    scanBtn.disabled = true;
+    reloadBtn.disabled = true;
+    stopBtn.disabled = true;
+    showStatus(FACE_RUNTIME_REASON || "Face recognition is unavailable on this deployment.", "warning");
+}
 </script>
 {% endblock %}
