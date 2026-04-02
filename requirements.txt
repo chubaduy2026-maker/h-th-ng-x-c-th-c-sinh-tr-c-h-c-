@@ -1,3 +1,7 @@
+insightface
+onnxruntime
+opencv-python-headless
+faiss-cpu
 pymongo
 python-dotenv
 fastapi
