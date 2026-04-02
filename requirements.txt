@@ -1,5 +1,6 @@
 pymongo
 python-dotenv
 fastapi
+uvicorn
 jinja2
 numpy
