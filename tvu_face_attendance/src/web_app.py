@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -59,20 +60,32 @@ except ImportError:
     )
 FACE_RUNTIME_AVAILABLE = True
 FACE_RUNTIME_REASON = ""
+_VERCEL_LITE_MODE = os.getenv("VERCEL") == "1"
 
 try:
-    try:
-        from src.face_engine import get_embedding_from_face, get_faces
-        from src.matcher import FaceMatcher
-    except ImportError:
-        from face_engine import get_embedding_from_face, get_faces
-        from matcher import FaceMatcher
+    from src.face_engine import get_embedding_from_face, get_faces
+    from src.matcher import FaceMatcher
 except Exception as exc:
-    FACE_RUNTIME_AVAILABLE = False
-    FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
-    get_embedding_from_face = None
-    get_faces = None
-    FaceMatcher = None
+    if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", "") in {
+        "src",
+        "src.face_engine",
+        "src.matcher",
+    }:
+        try:
+            from face_engine import get_embedding_from_face, get_faces
+            from matcher import FaceMatcher
+        except Exception as inner_exc:
+            FACE_RUNTIME_AVAILABLE = False
+            FACE_RUNTIME_REASON = f"{type(inner_exc).__name__}: {inner_exc}"
+            get_embedding_from_face = None
+            get_faces = None
+            FaceMatcher = None
+    else:
+        FACE_RUNTIME_AVAILABLE = False
+        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
+        get_embedding_from_face = None
+        get_faces = None
+        FaceMatcher = None
 
 
 class _IndexStub:
@@ -95,10 +108,22 @@ class _DisabledFaceMatcher:
 
 
 def _face_runtime_message() -> str:
+    if _VERCEL_LITE_MODE:
+        return (
+            "Face recognition is unavailable on this deployment. "
+            "Vercel lite mode is enabled because AI dependencies exceed Vercel runtime limits."
+        )
+
     base = "Face recognition is unavailable on this deployment."
     if FACE_RUNTIME_REASON:
         return f"{base} {FACE_RUNTIME_REASON}"
     return base
+
+
+def _face_runtime_reason() -> str:
+    if _VERCEL_LITE_MODE:
+        return "Vercel lite mode: heavy AI dependencies are disabled for this deployment."
+    return FACE_RUNTIME_REASON or "Required AI runtime dependencies are missing."
 
 
 def _ensure_face_runtime() -> None:
@@ -283,7 +308,7 @@ async def register_page(request: Request) -> HTMLResponse:
         context={
             "page_title": "Register",
             "face_runtime_available": FACE_RUNTIME_AVAILABLE and cv2 is not None,
-            "face_runtime_reason": _face_runtime_message(),
+            "face_runtime_reason": _face_runtime_reason(),
         },
     )
 
@@ -296,7 +321,7 @@ async def attendance_page(request: Request) -> HTMLResponse:
         context={
             "page_title": "Attendance",
             "face_runtime_available": FACE_RUNTIME_AVAILABLE and cv2 is not None,
-            "face_runtime_reason": _face_runtime_message(),
+            "face_runtime_reason": _face_runtime_reason(),
         },
     )
 
