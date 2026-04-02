@@ -3,6 +3,12 @@
 {% block title %}Register | TVU Attendance{% endblock %}
 
 {% block content %}
+{% if not face_runtime_available %}
+<div class="alert alert-warning" role="alert">
+    Face recognition is unavailable on this deployment. {{ face_runtime_reason }}
+</div>
+{% endif %}
+
 <div class="row g-3">
     <div class="col-lg-6">
         <div class="card shadow-sm border-0 h-100">
@@ -53,6 +59,8 @@ const captureBtn = document.getElementById("captureBtn");
 const submitBtn = document.getElementById("submitBtn");
 const statusBox = document.getElementById("statusBox");
 const FLIP_CAMERA = true;
+const FACE_RUNTIME_AVAILABLE = {{ face_runtime_available | tojson }};
+const FACE_RUNTIME_REASON = {{ face_runtime_reason | tojson }};
 
 let capturedImage = "";
 
@@ -102,6 +110,11 @@ captureBtn.addEventListener("click", captureFrame);
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
 
+    if (!FACE_RUNTIME_AVAILABLE) {
+        showStatus(FACE_RUNTIME_REASON || "Face recognition is unavailable on this deployment.", "warning");
+        return;
+    }
+
     const mssv = document.getElementById("mssv").value.trim();
     const name = document.getElementById("name").value.trim();
 
@@ -145,6 +158,12 @@ form.addEventListener("submit", async (event) => {
     }
 });
 
-startCamera();
+if (!FACE_RUNTIME_AVAILABLE) {
+    captureBtn.disabled = true;
+    submitBtn.disabled = true;
+    showStatus(FACE_RUNTIME_REASON || "Face recognition is unavailable on this deployment.", "warning");
+} else {
+    startCamera();
+}
 </script>
 {% endblock %}
