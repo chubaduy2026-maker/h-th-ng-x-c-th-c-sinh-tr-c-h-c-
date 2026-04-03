@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cv2
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,7 +28,15 @@ try:
         SCAN_DURATION_SECONDS,
         validate_config,
     )
-    from src.face_engine import process_frame
+    try:
+        from src.face_engine import process_frame
+
+        FACE_RUNTIME_AVAILABLE = cv2 is not None
+        FACE_RUNTIME_REASON = ""
+    except Exception as exc:
+        process_frame = None
+        FACE_RUNTIME_AVAILABLE = False
+        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
 except ImportError:
     from config import (
         ATTENDANCE_LOG_COLLECTION,
@@ -34,7 +46,19 @@ except ImportError:
         SCAN_DURATION_SECONDS,
         validate_config,
     )
-    from face_engine import process_frame
+    try:
+        from face_engine import process_frame
+
+        FACE_RUNTIME_AVAILABLE = cv2 is not None
+        FACE_RUNTIME_REASON = ""
+    except Exception as exc:
+        process_frame = None
+        FACE_RUNTIME_AVAILABLE = False
+        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
+
+if cv2 is None and FACE_RUNTIME_AVAILABLE:
+    FACE_RUNTIME_AVAILABLE = False
+    FACE_RUNTIME_REASON = "OpenCV is unavailable."
 
 
 class ScanState:
@@ -109,6 +133,9 @@ def _remaining_seconds() -> int:
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
+    if cv2 is None:
+        raise HTTPException(status_code=503, detail="OpenCV runtime is unavailable.")
+
     payload = image_base64.strip()
     if payload.startswith("data:image") and "," in payload:
         payload = payload.split(",", 1)[1]
@@ -191,7 +218,11 @@ async def index_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"db_error": _db_error},
+        context={
+            "db_error": _db_error,
+            "face_runtime_available": FACE_RUNTIME_AVAILABLE,
+            "face_runtime_reason": FACE_RUNTIME_REASON,
+        },
     )
 
 
@@ -235,11 +266,28 @@ async def admin_page(request: Request) -> HTMLResponse:
 
 @app.post("/start_scan")
 async def start_scan() -> dict[str, Any]:
+    if not FACE_RUNTIME_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Face runtime unavailable on this deployment. "
+                + (FACE_RUNTIME_REASON or "Missing AI dependencies.")
+            ),
+        )
     return _state.start()
 
 
 @app.post("/process_frame")
 async def process_scan_frame(request: Request) -> dict[str, Any]:
+    if not FACE_RUNTIME_AVAILABLE or process_frame is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Face runtime unavailable on this deployment. "
+                + (FACE_RUNTIME_REASON or "Missing AI dependencies.")
+            ),
+        )
+
     payload = await request.json()
     image_base64 = str(payload.get("image_base64", "")).strip()
     if not image_base64:
@@ -327,4 +375,6 @@ async def health() -> dict[str, Any]:
         "db_ready": _attendance_logs is not None,
         "is_scanning": _state.is_scanning,
         "camera_mode": "browser",
+        "face_runtime_available": FACE_RUNTIME_AVAILABLE,
+        "face_runtime_reason": FACE_RUNTIME_REASON,
     }

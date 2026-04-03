@@ -163,6 +163,10 @@
         {% if db_error %}
         <div class="db-warning">{{ db_error }}</div>
         {% endif %}
+
+        {% if not face_runtime_available %}
+        <div class="db-warning">Face runtime unavailable: {{ face_runtime_reason }}</div>
+        {% endif %}
       </aside>
     </div>
   </div>
