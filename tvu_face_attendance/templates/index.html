@@ -1,92 +1,204 @@
-{% extends 'base.html' %}
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>He thong diem danh khuon mat</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
 
-{% block title %}TVU Face Attendance{% endblock %}
+    .container {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
 
-{% block content %}
-<div class="row g-3">
-  <div class="col-lg-8">
-    <div class="card shadow-sm border-0">
-      <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <h1 class="h4 mb-0">TVU Face Attendance</h1>
-          <button id="startScanBtn" type="button" class="btn btn-primary">Bat dau diem danh</button>
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .header a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      padding: 16px;
+    }
+
+    #camera {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #d1d5db;
+      background: #111827;
+      display: block;
+    }
+
+    .actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+
+    .status-box {
+      margin-top: 8px;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      background: #f9fafb;
+    }
+
+    .status-label {
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 6px;
+    }
+
+    .status-value {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .db-warning {
+      margin-top: 10px;
+      color: #b91c1c;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>He thong diem danh khuon mat</h1>
+      <a href="/admin">Xem lich su diem danh</a>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <img id="camera" src="/video_feed" alt="Camera stream" />
+        <div class="actions">
+          <button id="startBtn" type="button">Bat dau diem danh</button>
+          <span id="countdownText">San sang.</span>
+        </div>
+      </section>
+
+      <aside class="card">
+        <div class="status-box">
+          <div class="status-label">Trang thai</div>
+          <div id="statusText" class="status-value">Trang thai cho</div>
         </div>
 
-        <img
-          id="videoStream"
-          src="/video_feed"
-          alt="Camera stream"
-          class="w-100 rounded border"
-          style="background:#101010;aspect-ratio:4/3;object-fit:cover;"
-        />
-
-        <div id="scanStatus" class="alert alert-info mt-3 mb-0" role="alert">
-          San sang. Bam "Bat dau diem danh" de bat dau phien quet 6 giay.
+        <div class="status-box">
+          <div class="status-label">Ket qua gan nhat</div>
+          <div id="resultText" class="status-value">Chua co ket qua</div>
         </div>
-      </div>
+
+        {% if db_error %}
+        <div class="db-warning">{{ db_error }}</div>
+        {% endif %}
+      </aside>
     </div>
   </div>
 
-  <div class="col-lg-4">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <h2 class="h5">Huong dan nhanh</h2>
-        <ol class="mb-0">
-          <li>Bam "Bat dau diem danh".</li>
-          <li>Giup khuon mat nam ro trong khung hinh trong 6 giay.</li>
-          <li>He thong se chot 1 ket qua va tu dong luu vao attendance_logs.</li>
-          <li>Mo trang Admin de xem lich su.</li>
-        </ol>
-      </div>
-    </div>
-  </div>
-</div>
+  <script>
+    const startBtn = document.getElementById("startBtn");
+    const countdownText = document.getElementById("countdownText");
+    const statusText = document.getElementById("statusText");
+    const resultText = document.getElementById("resultText");
 
-<script>
-const startBtn = document.getElementById("startScanBtn");
-const statusBox = document.getElementById("scanStatus");
-
-function showStatus(message, type = "info") {
-  statusBox.className = `alert mt-3 mb-0 alert-${type}`;
-  statusBox.textContent = message;
-}
-
-async function refreshScanStatus() {
-  try {
-    const response = await fetch("/scan_status");
-    const data = await response.json();
-
-    if (data.is_scanning) {
+    async function startScan() {
       startBtn.disabled = true;
-      showStatus(`Dang quet... con ${data.remaining_seconds}s`, "warning");
-    } else {
-      startBtn.disabled = false;
-      showStatus(data.last_result || "San sang.", "info");
+      try {
+        const response = await fetch("/start_scan", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Khong the bat dau quet");
+        }
+
+        if (data.status === "busy") {
+          countdownText.textContent = `Dang quet: ${data.remaining_seconds}s`;
+        } else {
+          countdownText.textContent = "Da bat dau phien quet 6 giay";
+        }
+      } catch (error) {
+        countdownText.textContent = error.message || "Khong the bat dau quet";
+      } finally {
+        startBtn.disabled = false;
+      }
     }
-  } catch (error) {
-    showStatus("Khong lay duoc trang thai quet.", "danger");
-  }
-}
 
-startBtn.addEventListener("click", async () => {
-  startBtn.disabled = true;
-  try {
-    const response = await fetch("/start_scan", { method: "POST" });
-    const data = await response.json();
+    async function refreshStatus() {
+      try {
+        const response = await fetch("/scan_status", { cache: "no-store" });
+        const data = await response.json();
 
-    if (data.status === "busy") {
-      showStatus("Dang co phien quet khac. Vui long cho hoan tat.", "warning");
-    } else {
-      showStatus("Da bat dau quet 6 giay.", "success");
+        if (data.is_scanning) {
+          statusText.textContent = "Dang quet";
+          countdownText.textContent = `Con ${data.remaining_seconds}s`;
+        } else {
+          statusText.textContent = data.status_text || "Trang thai cho";
+          countdownText.textContent = "San sang.";
+        }
+
+        if (data.last_result && data.last_result.matched) {
+          resultText.textContent = `Da nhan dien: ${data.last_result.name}`;
+        } else if (data.last_result && data.last_result.message) {
+          resultText.textContent = data.last_result.message;
+        }
+
+        if (data.last_error) {
+          resultText.textContent = `Loi AI: ${data.last_error}`;
+        }
+      } catch (error) {
+        statusText.textContent = "Mat ket noi backend";
+      }
     }
-  } catch (error) {
-    showStatus("Khong the bat dau phien quet.", "danger");
-  } finally {
-    refreshScanStatus();
-  }
-});
 
-setInterval(refreshScanStatus, 800);
-refreshScanStatus();
-</script>
-{% endblock %}
+    startBtn.addEventListener("click", startScan);
+    setInterval(refreshStatus, 500);
+    refreshStatus();
+  </script>
+</body>
+</html>

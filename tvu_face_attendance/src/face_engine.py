@@ -57,9 +57,9 @@ def _get_face_app() -> FaceAnalysis:
 
 
 def _build_sample_vectors() -> list[dict[str, Any]]:
-    # Hardcoded vectors to validate cosine-matching flow before real enrollment vectors.
-    vec1 = np.linspace(-1.0, 1.0, 512, dtype=np.float32)
-    vec2 = np.cos(np.linspace(0.0, np.pi * 4.0, 512, dtype=np.float32)).astype(np.float32)
+    rng = np.random.default_rng(2026)
+    vec1 = rng.normal(0.0, 1.0, 512).astype(np.float32)
+    vec2 = rng.normal(0.0, 1.0, 512).astype(np.float32)
 
     vec1 = _normalize_embedding(vec1)
     vec2 = _normalize_embedding(vec2)
@@ -86,10 +86,7 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _largest_face(faces: list[Any]) -> Any:
-    return max(
-        faces,
-        key=lambda face: float((face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1])),
-    )
+    return max(faces, key=lambda face: float(getattr(face, "det_score", 0.0)))
 
 
 def _clip_box(box: np.ndarray, shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
@@ -141,6 +138,7 @@ def process_frame(frame: np.ndarray) -> dict[str, Any]:
             "match_score": 0.0,
             "is_live": False,
             "liveness_warning": "No face",
+            "candidate_score": 0.0,
         }
 
     best_face = _largest_face(faces)
@@ -158,8 +156,13 @@ def process_frame(frame: np.ndarray) -> dict[str, Any]:
                 "score": float(score),
             }
 
-    matched = bool(best_match and best_match["score"] >= COSINE_THRESHOLD)
     is_live, live_msg = _basic_liveness(frame, bbox)
+    matched = bool(best_match and best_match["score"] >= COSINE_THRESHOLD and is_live)
+    candidate_score = (
+        0.55 * float(det_confidence) + 0.45 * float(best_match["score"])
+        if best_match and matched
+        else 0.0
+    )
 
     return {
         "face_found": True,
@@ -170,6 +173,7 @@ def process_frame(frame: np.ndarray) -> dict[str, Any]:
         "match_score": float(best_match["score"]) if best_match else 0.0,
         "is_live": is_live,
         "liveness_warning": "" if is_live else live_msg,
+        "candidate_score": float(candidate_score),
     }
 
 

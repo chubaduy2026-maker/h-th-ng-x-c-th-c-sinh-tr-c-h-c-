@@ -1,10 +1,9 @@
-insightface
-onnxruntime
-opencv-python-headless==4.10.0.84
-faiss-cpu
-pymongo
-python-dotenv
 fastapi
 uvicorn
 jinja2
+pymongo
+python-dotenv
+insightface
+onnxruntime
 numpy
+opencv-python-headless
