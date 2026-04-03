@@ -44,12 +44,32 @@
       padding: 16px;
     }
 
-    #camera {
+    .camera-wrap {
+      position: relative;
       width: 100%;
       border-radius: 10px;
       border: 1px solid #d1d5db;
+      overflow: hidden;
       background: #111827;
+      aspect-ratio: 16 / 9;
+    }
+
+    #camera {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
       display: block;
+      transform: scaleX(-1);
+    }
+
+    #overlay {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      color: #22c55e;
+      font-size: 28px;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
     }
 
     .actions {
@@ -117,7 +137,12 @@
 
     <div class="grid">
       <section class="card">
-        <img id="camera" src="/video_feed" alt="Camera stream" />
+        <div class="camera-wrap">
+          <video id="camera" autoplay playsinline muted></video>
+          <div id="overlay">Trang thai cho</div>
+        </div>
+        <canvas id="snapshot" style="display:none"></canvas>
+
         <div class="actions">
           <button id="startBtn" type="button">Bat dau diem danh</button>
           <span id="countdownText">San sang.</span>
@@ -147,6 +172,25 @@
     const countdownText = document.getElementById("countdownText");
     const statusText = document.getElementById("statusText");
     const resultText = document.getElementById("resultText");
+    const overlay = document.getElementById("overlay");
+    const video = document.getElementById("camera");
+    const canvas = document.getElementById("snapshot");
+
+    let stream = null;
+    let frameTimer = null;
+
+    async function initCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        });
+        video.srcObject = stream;
+      } catch (error) {
+        statusText.textContent = "Khong mo duoc camera trinh duyet";
+        resultText.textContent = "Hay cap quyen camera va tai lai trang";
+      }
+    }
 
     async function startScan() {
       startBtn.disabled = true;
@@ -162,6 +206,8 @@
         } else {
           countdownText.textContent = "Da bat dau phien quet 6 giay";
         }
+
+        startFrameLoop();
       } catch (error) {
         countdownText.textContent = error.message || "Khong the bat dau quet";
       } finally {
@@ -169,35 +215,95 @@
       }
     }
 
+    function startFrameLoop() {
+      if (frameTimer) {
+        return;
+      }
+
+      frameTimer = setInterval(sendFrame, 250);
+    }
+
+    function stopFrameLoop() {
+      if (frameTimer) {
+        clearInterval(frameTimer);
+      }
+      frameTimer = null;
+    }
+
+    async function sendFrame() {
+      if (!video.videoWidth || !video.videoHeight) {
+        return;
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.save();
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.82);
+
+      try {
+        const response = await fetch("/process_frame", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image_base64: imageBase64 }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Xu ly khung hinh that bai");
+        }
+
+        renderState(data);
+      } catch (error) {
+        resultText.textContent = error.message || "Loi gui frame";
+      }
+    }
+
+    function renderState(data) {
+      if (data.is_scanning) {
+        statusText.textContent = "Dang quet";
+        countdownText.textContent = `Con ${data.remaining_seconds}s`;
+        overlay.textContent = `${data.remaining_seconds}s`;
+      } else {
+        statusText.textContent = data.status_text || "Trang thai cho";
+        countdownText.textContent = "San sang.";
+        overlay.textContent = "Trang thai cho";
+        stopFrameLoop();
+      }
+
+      if (data.preview && data.preview.name) {
+        resultText.textContent = `Dang theo doi: ${data.preview.name}`;
+      }
+
+      if (data.last_result && data.last_result.matched) {
+        resultText.textContent = `Da nhan dien: ${data.last_result.name}`;
+      } else if (data.last_result && data.last_result.message) {
+        resultText.textContent = data.last_result.message;
+      }
+
+      if (data.last_error) {
+        resultText.textContent = `Loi AI: ${data.last_error}`;
+      }
+    }
+
     async function refreshStatus() {
       try {
         const response = await fetch("/scan_status", { cache: "no-store" });
         const data = await response.json();
-
-        if (data.is_scanning) {
-          statusText.textContent = "Dang quet";
-          countdownText.textContent = `Con ${data.remaining_seconds}s`;
-        } else {
-          statusText.textContent = data.status_text || "Trang thai cho";
-          countdownText.textContent = "San sang.";
-        }
-
-        if (data.last_result && data.last_result.matched) {
-          resultText.textContent = `Da nhan dien: ${data.last_result.name}`;
-        } else if (data.last_result && data.last_result.message) {
-          resultText.textContent = data.last_result.message;
-        }
-
-        if (data.last_error) {
-          resultText.textContent = `Loi AI: ${data.last_error}`;
-        }
+        renderState(data);
       } catch (error) {
         statusText.textContent = "Mat ket noi backend";
       }
     }
 
     startBtn.addEventListener("click", startScan);
-    setInterval(refreshStatus, 500);
+    setInterval(refreshStatus, 700);
+    initCamera();
     refreshStatus();
   </script>
 </body>

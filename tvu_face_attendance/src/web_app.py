@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import threading
 import time
 from datetime import datetime, timezone
@@ -9,7 +11,7 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pymongo import MongoClient
 
@@ -17,7 +19,6 @@ try:
     from src.config import (
         ATTENDANCE_LOG_COLLECTION,
         BASE_DIR,
-        CAMERA_INDEX,
         DB_NAME,
         MONGO_URI,
         SCAN_DURATION_SECONDS,
@@ -28,44 +29,12 @@ except ImportError:
     from config import (
         ATTENDANCE_LOG_COLLECTION,
         BASE_DIR,
-        CAMERA_INDEX,
         DB_NAME,
         MONGO_URI,
         SCAN_DURATION_SECONDS,
         validate_config,
     )
     from face_engine import process_frame
-
-
-class CameraStream:
-    def __init__(self, camera_index: int) -> None:
-        self.camera_index = camera_index
-        self._lock = threading.Lock()
-        self._capture: cv2.VideoCapture | None = None
-
-    def read(self) -> tuple[bool, np.ndarray]:
-        with self._lock:
-            if self._capture is None:
-                self._capture = cv2.VideoCapture(self.camera_index)
-                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-            ok, frame = self._capture.read()
-            if ok and frame is not None:
-                return True, frame
-
-            fallback = np.zeros((720, 1280, 3), dtype=np.uint8)
-            cv2.putText(
-                fallback,
-                "Camera unavailable",
-                (40, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            return False, fallback
 
 
 class ScanState:
@@ -99,15 +68,13 @@ class ScanState:
 
             return {
                 "status": "ok",
-                "message": "Da bat dau phien quet 6 giay.",
+                "message": f"Da bat dau phien quet {self.duration} giay.",
                 "remaining_seconds": self.duration,
             }
 
 
 app = FastAPI(title="TVU Face Attendance")
 templates = Jinja2Templates(directory=str(Path(BASE_DIR) / "templates"))
-
-_camera = CameraStream(CAMERA_INDEX)
 _state = ScanState()
 
 _db_client: MongoClient | None = None
@@ -141,34 +108,20 @@ def _remaining_seconds() -> int:
     return max(0, int(np.ceil(_state.duration - elapsed)))
 
 
-def _draw_overlay(frame: np.ndarray) -> np.ndarray:
-    with _state.lock:
-        is_scanning = _state.is_scanning
-        remaining = _remaining_seconds() if is_scanning else 0
-        status_text = _state.last_status
+def _decode_base64_image(image_base64: str) -> np.ndarray:
+    payload = image_base64.strip()
+    if payload.startswith("data:image") and "," in payload:
+        payload = payload.split(",", 1)[1]
 
-    if is_scanning:
-        cv2.putText(
-            frame,
-            f"Scan: {remaining}s",
-            (20, 45),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (0, 0, 255),
-            3,
-            cv2.LINE_AA,
-        )
-    else:
-        cv2.putText(
-            frame,
-            status_text,
-            (20, 45),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
+    try:
+        image_bytes = base64.b64decode(payload, validate=True)
+    except binascii.Error as exc:
+        raise HTTPException(status_code=400, detail="Invalid base64 image.") from exc
+
+    np_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Cannot decode image data.")
 
     return frame
 
@@ -233,66 +186,6 @@ def _finalize_scan_once() -> None:
     }
 
 
-def _frame_generator():
-    while True:
-        _, frame = _camera.read()
-
-        with _state.lock:
-            scanning = _state.is_scanning
-
-        if scanning:
-            try:
-                result = process_frame(frame)
-            except Exception as exc:
-                with _state.lock:
-                    _state.last_error = str(exc)
-                result = {
-                    "face_found": False,
-                    "bbox": None,
-                    "mssv": None,
-                    "name": None,
-                    "det_confidence": 0.0,
-                    "match_score": 0.0,
-                    "candidate_score": 0.0,
-                }
-
-            with _state.lock:
-                _update_best_candidate(result)
-
-                bbox = result.get("bbox")
-                if bbox:
-                    x1, y1, x2, y2 = [int(v) for v in bbox]
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                    label = "Scanning"
-                    if result.get("name"):
-                        label = str(result["name"])
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x1, max(20, y1 - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 255, 0),
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                if _remaining_seconds() <= 0 and _state.is_scanning:
-                    _finalize_scan_once()
-
-        frame = _draw_overlay(frame)
-        ok, encoded = cv2.imencode(".jpg", frame)
-        if not ok:
-            continue
-
-        payload = encoded.tobytes()
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
-        )
-
-
 @app.get("/", response_class=HTMLResponse)
 async def index_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -345,9 +238,70 @@ async def start_scan() -> dict[str, Any]:
     return _state.start()
 
 
+@app.post("/process_frame")
+async def process_scan_frame(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    image_base64 = str(payload.get("image_base64", "")).strip()
+    if not image_base64:
+        raise HTTPException(status_code=400, detail="image_base64 is required.")
+
+    with _state.lock:
+        if not _state.is_scanning:
+            return {
+                "is_scanning": False,
+                "remaining_seconds": 0,
+                "status_text": _state.last_status,
+                "last_result": _state.last_result,
+                "last_error": _state.last_error,
+                "preview": None,
+            }
+
+    frame = _decode_base64_image(image_base64)
+
+    try:
+        result = process_frame(frame)
+    except Exception as exc:
+        with _state.lock:
+            _state.last_error = str(exc)
+        result = {
+            "face_found": False,
+            "bbox": None,
+            "mssv": None,
+            "name": None,
+            "det_confidence": 0.0,
+            "match_score": 0.0,
+            "candidate_score": 0.0,
+        }
+
+    preview = None
+    with _state.lock:
+        _update_best_candidate(result)
+
+        if _remaining_seconds() <= 0 and _state.is_scanning:
+            _finalize_scan_once()
+
+        if _state.best_candidate is not None:
+            preview = {
+                "mssv": _state.best_candidate["mssv"],
+                "name": _state.best_candidate["name"],
+            }
+
+        return {
+            "is_scanning": _state.is_scanning,
+            "remaining_seconds": _remaining_seconds() if _state.is_scanning else 0,
+            "status_text": _state.last_status if not _state.is_scanning else "Dang quet...",
+            "last_result": _state.last_result,
+            "last_error": _state.last_error,
+            "preview": preview,
+        }
+
+
 @app.get("/scan_status")
 async def scan_status() -> dict[str, Any]:
     with _state.lock:
+        if _state.is_scanning and _remaining_seconds() <= 0:
+            _finalize_scan_once()
+
         if _state.is_scanning:
             return {
                 "is_scanning": True,
@@ -366,18 +320,11 @@ async def scan_status() -> dict[str, Any]:
         }
 
 
-@app.get("/video_feed")
-async def video_feed() -> StreamingResponse:
-    return StreamingResponse(
-        _frame_generator(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
-
-
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "db_ready": _attendance_logs is not None,
         "is_scanning": _state.is_scanning,
+        "camera_mode": "browser",
     }
