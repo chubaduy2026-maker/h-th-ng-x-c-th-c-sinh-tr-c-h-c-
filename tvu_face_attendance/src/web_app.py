@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -19,6 +22,40 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pymongo import MongoClient
 
+
+def _import_process_frame_func() -> Any:
+    try:
+        from src.face_engine import process_frame as imported_process_frame
+
+        return imported_process_frame
+    except Exception as src_exc:
+        try:
+            from face_engine import process_frame as imported_process_frame
+
+            return imported_process_frame
+        except Exception as local_exc:
+            raise local_exc from src_exc
+
+
+def _install_face_runtime_packages() -> str:
+    packages_env = os.getenv("FACE_RUNTIME_PIP_PACKAGES", "insightface onnxruntime")
+    packages = [item.strip() for item in packages_env.split() if item.strip()]
+    if not packages:
+        return "FACE_RUNTIME_PIP_PACKAGES is empty."
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", *packages],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=600,
+        )
+        return ""
+    except Exception as exc:
+        return f"Auto-install failed: {type(exc).__name__}: {exc}"
+
 try:
     from src.config import (
         ATTENDANCE_LOG_COLLECTION,
@@ -28,15 +65,6 @@ try:
         SCAN_DURATION_SECONDS,
         validate_config,
     )
-    try:
-        from src.face_engine import process_frame
-
-        FACE_RUNTIME_AVAILABLE = cv2 is not None
-        FACE_RUNTIME_REASON = ""
-    except Exception as exc:
-        process_frame = None
-        FACE_RUNTIME_AVAILABLE = False
-        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
 except ImportError:
     from config import (
         ATTENDANCE_LOG_COLLECTION,
@@ -46,19 +74,35 @@ except ImportError:
         SCAN_DURATION_SECONDS,
         validate_config,
     )
+
+process_frame = None
+FACE_RUNTIME_AVAILABLE = cv2 is not None
+FACE_RUNTIME_REASON = "" if cv2 is not None else "OpenCV is unavailable."
+
+if FACE_RUNTIME_AVAILABLE:
     try:
-        from face_engine import process_frame
-
-        FACE_RUNTIME_AVAILABLE = cv2 is not None
-        FACE_RUNTIME_REASON = ""
+        process_frame = _import_process_frame_func()
     except Exception as exc:
-        process_frame = None
-        FACE_RUNTIME_AVAILABLE = False
-        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
+        auto_install = os.getenv("AUTO_INSTALL_FACE_RUNTIME", "1" if os.getenv("RENDER") else "0") == "1"
+        if auto_install:
+            install_error = _install_face_runtime_packages()
+            if not install_error:
+                try:
+                    process_frame = _import_process_frame_func()
+                except Exception as retry_exc:
+                    FACE_RUNTIME_AVAILABLE = False
+                    FACE_RUNTIME_REASON = f"{type(retry_exc).__name__}: {retry_exc}"
+            else:
+                FACE_RUNTIME_AVAILABLE = False
+                FACE_RUNTIME_REASON = install_error
+        else:
+            FACE_RUNTIME_AVAILABLE = False
+            FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
 
-if cv2 is None and FACE_RUNTIME_AVAILABLE:
+if process_frame is None:
     FACE_RUNTIME_AVAILABLE = False
-    FACE_RUNTIME_REASON = "OpenCV is unavailable."
+    if not FACE_RUNTIME_REASON:
+        FACE_RUNTIME_REASON = "Face engine is unavailable."
 
 
 class ScanState:

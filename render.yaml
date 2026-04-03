@@ -7,5 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+      - key: AUTO_INSTALL_FACE_RUNTIME
+        value: "1"
+      - key: FACE_RUNTIME_PIP_PACKAGES
+        value: insightface onnxruntime
       - key: RELEASE
         value: 2026-04-03-render-headless-python
