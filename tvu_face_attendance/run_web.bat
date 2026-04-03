@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
@@ -22,9 +22,15 @@ echo [INFO] Port 8000 dang duoc su dung (PID %PID%).
 for /f %%S in ('powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:8000/health -TimeoutSec 3; $r.StatusCode } catch { 0 }"') do set "HTTP_STATUS=%%S"
 
 if "%HTTP_STATUS%"=="200" (
-  echo [INFO] TVU web app dang chay san.
-  start "" "http://127.0.0.1:8000/attendance"
-  goto :eof
+  set "FACE_RUNTIME_OK=1"
+  for /f %%W in ('powershell -NoProfile -Command "try { $h=Invoke-RestMethod -Uri http://127.0.0.1:8000/health -TimeoutSec 3; if ($h.face_runtime_available -eq $true) { 1 } else { 0 } } catch { 1 }"') do set "FACE_RUNTIME_OK=%%W"
+  if "!FACE_RUNTIME_OK!"=="1" (
+    echo [INFO] TVU web app dang chay san.
+    start "" "http://127.0.0.1:8000/attendance"
+    goto :eof
+  )
+  echo [WARN] Server hien tai dang bao face runtime unavailable.
+  echo [INFO] Dang restart de nap lai dependency moi...
 )
 
 echo [WARN] Cong 8000 dang bi app khac chiem, khong phai TVU web app.

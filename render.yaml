@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tvu-face-attendance
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: AUTO_INSTALL_CV2
+        value: "0"
+      - key: CV2_PIP_PACKAGE
+        value: opencv-python-headless==4.10.0.84
+      - key: RELEASE
+        value: 2026-04-03-render-docker-fix

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import importlib.util
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -10,10 +13,39 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-try:
-    import cv2
-except Exception:
-    cv2 = None
+def _import_cv2_with_optional_bootstrap() -> tuple[Any | None, str]:
+    try:
+        import cv2 as _cv2  # type: ignore
+
+        return _cv2, ""
+    except Exception as exc:
+        initial_error = f"{type(exc).__name__}: {exc}"
+
+    auto_install = os.getenv("AUTO_INSTALL_CV2", "1" if os.getenv("RENDER") else "0") == "1"
+    if not auto_install:
+        return None, initial_error
+
+    package_name = os.getenv("CV2_PIP_PACKAGE", "opencv-python-headless==4.10.0.84")
+    try:
+        # Render can occasionally skip/override build deps in misconfigured services.
+        # This fallback attempts to recover cv2 at boot so the app can still run.
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", package_name],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=240,
+        )
+        import cv2 as _cv2_after_install  # type: ignore
+
+        return _cv2_after_install, ""
+    except Exception as install_exc:
+        install_error = f"{type(install_exc).__name__}: {install_exc}"
+        return None, f"{initial_error}; auto-install failed ({package_name}) -> {install_error}"
+
+
+cv2, _CV2_IMPORT_ERROR = _import_cv2_with_optional_bootstrap()
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -58,34 +90,39 @@ except ImportError:
         pull_data,
         update_attendance,
     )
-FACE_RUNTIME_AVAILABLE = True
-FACE_RUNTIME_REASON = ""
+FACE_RUNTIME_AVAILABLE = cv2 is not None
+FACE_RUNTIME_REASON = _CV2_IMPORT_ERROR
 _VERCEL_LITE_MODE = os.getenv("VERCEL") == "1"
 
-try:
-    from src.face_engine import get_embedding_from_face, get_faces
-    from src.matcher import FaceMatcher
-except Exception as exc:
-    if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", "") in {
-        "src",
-        "src.face_engine",
-        "src.matcher",
-    }:
-        try:
-            from face_engine import get_embedding_from_face, get_faces
-            from matcher import FaceMatcher
-        except Exception as inner_exc:
+if FACE_RUNTIME_AVAILABLE:
+    try:
+        from src.face_engine import get_embedding_from_face, get_faces
+        from src.matcher import FaceMatcher
+    except Exception as exc:
+        if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", "") in {
+            "src",
+            "src.face_engine",
+            "src.matcher",
+        }:
+            try:
+                from face_engine import get_embedding_from_face, get_faces
+                from matcher import FaceMatcher
+            except Exception as inner_exc:
+                FACE_RUNTIME_AVAILABLE = False
+                FACE_RUNTIME_REASON = f"{type(inner_exc).__name__}: {inner_exc}"
+                get_embedding_from_face = None
+                get_faces = None
+                FaceMatcher = None
+        else:
             FACE_RUNTIME_AVAILABLE = False
-            FACE_RUNTIME_REASON = f"{type(inner_exc).__name__}: {inner_exc}"
+            FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
             get_embedding_from_face = None
             get_faces = None
             FaceMatcher = None
-    else:
-        FACE_RUNTIME_AVAILABLE = False
-        FACE_RUNTIME_REASON = f"{type(exc).__name__}: {exc}"
-        get_embedding_from_face = None
-        get_faces = None
-        FaceMatcher = None
+else:
+    get_embedding_from_face = None
+    get_faces = None
+    FaceMatcher = None
 
 
 class _IndexStub:
@@ -123,6 +160,8 @@ def _face_runtime_message() -> str:
 def _face_runtime_reason() -> str:
     if _VERCEL_LITE_MODE:
         return "Vercel lite mode: heavy AI dependencies are disabled for this deployment."
+    if FACE_RUNTIME_AVAILABLE and cv2 is not None:
+        return ""
     return FACE_RUNTIME_REASON or "Required AI runtime dependencies are missing."
 
 
@@ -605,4 +644,15 @@ async def api_finish_scan_session(request: Request) -> dict[str, Any]:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "face_runtime_available": FACE_RUNTIME_AVAILABLE and cv2 is not None,
+        "face_runtime_reason": _face_runtime_reason(),
+        "cv2_version": getattr(cv2, "__version__", ""),
+        "cv2_module_found": importlib.util.find_spec("cv2") is not None,
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "platform": sys.platform,
+        "render_git_commit": os.getenv("RENDER_GIT_COMMIT", ""),
+        "release": os.getenv("RELEASE", "2026-04-03-render-cv2-fix"),
+    }
